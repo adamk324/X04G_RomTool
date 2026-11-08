@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>X04GToolkit</AssemblyName>
+    <RootNamespace>X04G.Toolkit.App</RootNamespace>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+    <ApplicationUseCompatibleTextRendering>false</ApplicationUseCompatibleTextRendering>
+    <ApplicationDefaultFont>Segoe UI, 9pt</ApplicationDefaultFont>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <Title>X04G Windows ROM Toolkit</Title>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Core\X04G.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Optional: e2fsprogs Windows binaries placed here are picked up for ext4 shrinking (see tools/README.md). -->
+    <None Include="..\..\tools\e2fsprogs\**" Link="tools\e2fsprogs\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\tools\e2fsprogs')" />
+  </ItemGroup>
+</Project>

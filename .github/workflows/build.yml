@@ -1,0 +1,34 @@
+name: build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        run: dotnet build X04G_Windows_Toolkit.sln -c Release
+      - name: Test
+        run: dotnet run --project tests/X04G.Core.Tests -c Release --no-build
+      - name: Publish portable exe
+        run: dotnet publish src/Application/X04G.Toolkit.App.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: X04GToolkit-win-x64
+          path: publish/X04GToolkit.exe
+  linux-core-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install reference tools (simg2img, e2fsprogs)
+        run: sudo apt-get update && sudo apt-get install -y android-sdk-libsparse-utils e2fsprogs
+      - name: Test core (with cross-checks against simg2img/img2simg and e2fsprogs)
+        run: dotnet run --project tests/X04G.Core.Tests -c Release
