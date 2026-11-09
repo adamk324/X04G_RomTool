@@ -7,3 +7,4 @@ publish/
 TestResults/
 tools/e2fsprogs/*.exe
 tools/e2fsprogs/*.dll
+publish_*/
