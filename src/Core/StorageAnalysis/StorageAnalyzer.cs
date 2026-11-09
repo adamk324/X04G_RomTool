@@ -157,6 +157,44 @@ public static class StorageAnalyzer
             }
             foreach (var r in req.RemovePartitions)
                 if (!names.Contains(r)) report.InputFindings.Add(new Finding(Severity.Warning, Inp, $"'{r}' was selected for removal but does not exist in the source."));
+            // In-place file patches (validated read-only against the content that will be built)
+            foreach (var fp in req.FilePatches)
+            {
+                if (!names.Contains(fp.Partition) || req.RemovePartitions.Contains(fp.Partition))
+                {
+                    report.InputFindings.Add(new Finding(Severity.Fail, Inp, $"File patch {fp}: partition '{fp.Partition}' is not part of the new super."));
+                    continue;
+                }
+                if (!File.Exists(fp.ReplacementFile))
+                {
+                    report.InputFindings.Add(new Finding(Severity.Fail, Inp, $"File patch {fp}: replacement file not found."));
+                    continue;
+                }
+                try
+                {
+                    long newLen = new FileInfo(fp.ReplacementFile).Length;
+                    string? why;
+                    if (req.Replacements.TryGetValue(fp.Partition, out var repPath))
+                    {
+                        using var rf = ImageFile.Open(repPath);
+                        why = Ext4FilePatcher.CanPatch(rf.Stream, fp.PathInImage, newLen);
+                    }
+                    else
+                    {
+                        var lpPart = md.FindPartition(fp.Partition)!;
+                        var regions = md.ExtentsOf(lpPart).Select(e => ((long)(e.TargetData * LpFormat.SectorSize), (long)e.Bytes, e.TargetType == LpFormat.TargetZero));
+                        using var ps = new ConcatRegionStream(file.Stream, regions);
+                        why = Ext4FilePatcher.CanPatch(ps, fp.PathInImage, newLen);
+                    }
+                    report.InputFindings.Add(why == null
+                        ? new Finding(Severity.Pass, Inp, $"File patch {fp}: can be applied in place ({newLen:N0} bytes; inode, owner, mode and SELinux label are kept).")
+                        : new Finding(Severity.Fail, Inp, $"File patch {fp}: {why}."));
+                }
+                catch (Exception ex)
+                {
+                    report.InputFindings.Add(new Finding(Severity.Fail, Inp, $"File patch {fp}: {ex.Message}"));
+                }
+            }
             if (req.Profile.ReplacesSystem && !req.Replacements.ContainsKey("system"))
                 report.InputFindings.Add(new Finding(Severity.Fail, Inp, "No system image selected."));
 

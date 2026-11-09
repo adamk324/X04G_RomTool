@@ -39,3 +39,15 @@ sha256sum $R/d/big.bin | cut -d' ' -f1 > "$OUT/ext2_blockmap.big.sha256"
 R=$T/inl; mkdir -p $R/dir; printf 'inline!' > $R/dir/tiny.txt
 mk ext4_inline.img 1024 4096 ext4 "-O inline_data" $R
 rm -rf "$T"
+# Vendor-like image without metadata_csum/journal (like the X04G stock vendor) for in-place patch tests
+T=$(mktemp -d); R=$T/vp; mkdir -p $R/etc
+python3 -c "
+import sys
+body=''.join('        <MediaCodec name=\"OMX.TEST.DEC.%02d\" type=\"audio/x-test-%02d\">\n            <Limit name=\"concurrent-instances\" max=\"16\" />\n        </MediaCodec>\n\n'%(i,i) for i in range(40))
+open('$R/etc/codecs.xml','w').write('<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n<Included>\n    <Decoders>\n'+body+'    </Decoders>\n</Included>\n')"
+printf 'ro.vndk.version=29\n' > $R/build.prop
+truncate -s 1024K $T/vendor_nocsum.img
+mke2fs -q -F -t ext4 -b 4096 -O ^metadata_csum,^has_journal,^64bit -U 11111111-2222-3333-4444-555555555555 -E hash_seed=11111111-2222-3333-4444-555555555555 -d $R $T/vendor_nocsum.img
+debugfs -w -R "ea_set /etc/codecs.xml security.selinux u:object_r:vendor_configs_file:s0" $T/vendor_nocsum.img >/dev/null 2>&1
+gzip -9 -n -c $T/vendor_nocsum.img > "$OUT/vendor_nocsum.img.gz"
+rm -rf "$T"

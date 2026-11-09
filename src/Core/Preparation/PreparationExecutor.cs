@@ -130,6 +130,8 @@ public sealed class PreparationExecutor
             foreach (var d in op.Deletes) _log.Info($"[dry-run]   would delete {d}");
         }
         var req = plan.Request;
+        if (req.FilePatches.Count > 0)
+            _log.Info($"[dry-run] File patches validated (read-only): {string.Join("; ", req.FilePatches)}. Partition sizes do not change.");
         if (req.BuildSuper && report.SourceIsSuper && report.Layout?.Success == true && !(req.ShrinkExt4 && _toolchain != null && report.Planned.Any(p => p.Shrinkable)))
         {
             _log.Info("[dry-run] Simulating the super build in memory (reads every input, writes nothing)...");
@@ -218,6 +220,11 @@ public sealed class PreparationExecutor
 
         foreach (var p in report.Planned)
         {
+            var baseContent = DirectContent(super, p);
+            var patches = req.FilePatches.Where(f => f.Partition == p.Name).ToList();
+            if (patches.Count > 0)
+                baseContent = ApplyFilePatches(baseContent, p, patches, run, result, ct);
+
             if (shrink && p.Shrinkable)
             {
                 var workDir = Path.Combine(run, "work");
@@ -226,9 +233,9 @@ public sealed class PreparationExecutor
                 _log.Info($"Creating working copy of '{p.Name}' → {work}");
                 WithIncomplete(work, () =>
                 {
-                    using var src = DirectContent(super, p).Open();
+                    using var src = baseContent.Open();
                     using var dst = SafeFile.CreateNew(work);
-                    return StreamCopy.CopyWithHash(src, dst, p.ImageLength, $"Copying {p.Name}", _progress, ct);
+                    return StreamCopy.CopyWithHash(src, dst, baseContent.Length, $"Copying {p.Name}", _progress, ct);
                 });
                 _progress?.Report(new ProgressInfo($"Shrinking {p.Name}", 0, "e2fsck / resize2fs"));
                 _log.Info($"Shrinking '{p.Name}' with {_toolchain!.Name}...");
@@ -238,7 +245,7 @@ public sealed class PreparationExecutor
                 result.Outputs.Add(new OutputFile(work, len, $"Shrunk working copy of '{p.Name}' (intermediate)", null));
                 contents.Add((p, new PartitionContent { Name = p.Name, Length = len, SourceDescription = work, Open = () => SafeFile.OpenReadOnly(work) }));
             }
-            else contents.Add((p, DirectContent(super, p)));
+            else contents.Add((p, baseContent));
         }
 
         // Final layout from the real sizes
@@ -279,7 +286,7 @@ public sealed class PreparationExecutor
         outHash = Convert.ToHexString(HashFile(outPath, ct)).ToLowerInvariant();
         result.Outputs.Add(new OutputFile(outPath, new FileInfo(outPath).Length, $"New super image ({req.Format.ToString().ToLowerInvariant()})", outHash));
 
-        if (req.CleanupIntermediates && Directory.Exists(Path.Combine(run, "work")) && (result.Verified ?? false))
+        if (req.CleanupIntermediates && req.FilePatches.Count == 0 && Directory.Exists(Path.Combine(run, "work")) && (result.Verified ?? false))
         {
             Directory.Delete(Path.Combine(run, "work"), true);
             result.Outputs.RemoveAll(o => o.Description.Contains("intermediate"));
@@ -287,6 +294,36 @@ public sealed class PreparationExecutor
         }
         else if (Directory.Exists(Path.Combine(run, "work")))
             _log.Info("Working copies are kept in the work folder.");
+    }
+
+
+    /// <summary>Materializes the partition as work/&lt;name&gt;.orig.img, then applies the in-place file patches into work/&lt;name&gt;.patched.img.</summary>
+    private PartitionContent ApplyFilePatches(PartitionContent content, PlannedPartition p, List<FilePatch> patches, string run, ExecutionResult result, CancellationToken ct)
+    {
+        var workDir = Path.Combine(run, "work");
+        Directory.CreateDirectory(workDir);
+        var orig = SafeFile.UniquePath(workDir, p.Name + ".orig.img");
+        _log.Info($"Writing unmodified '{p.Name}' to {orig} (reference copy for comparison and rollback)");
+        var origHash = WithIncomplete(orig, () =>
+        {
+            using var src = content.Open();
+            using var dst = SafeFile.CreateNew(orig);
+            return StreamCopy.CopyWithHash(src, dst, content.Length, $"Copying {p.Name}", _progress, ct);
+        });
+        result.Outputs.Add(new OutputFile(orig, new FileInfo(orig).Length, $"Unmodified '{p.Name}' image (reference)", Convert.ToHexString(origHash).ToLowerInvariant()));
+        string current = orig;
+        for (int i = 0; i < patches.Count; i++)
+        {
+            var fp = patches[i];
+            var next = SafeFile.UniquePath(workDir, patches.Count == 1 ? $"{p.Name}.patched.img" : $"{p.Name}.patched{i + 1}.img");
+            var bytes = File.ReadAllBytes(fp.ReplacementFile);
+            var r = WithIncomplete(next, () => Ext4FilePatcher.PatchCopy(current, next, fp.PathInImage, bytes, _log, _progress, ct));
+            current = next;
+        }
+        var finalHash = Convert.ToHexString(HashFile(current, ct)).ToLowerInvariant();
+        result.Outputs.Add(new OutputFile(current, new FileInfo(current).Length, $"Patched '{p.Name}' image ({string.Join("; ", patches.Select(x => x.PathInImage))})", finalHash));
+        var path = current;
+        return new PartitionContent { Name = p.Name, Length = new FileInfo(path).Length, SourceDescription = path, Open = () => SafeFile.OpenReadOnly(path) };
     }
 
     private byte[] HashFile(string path, CancellationToken ct)

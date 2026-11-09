@@ -15,12 +15,14 @@ static int Usage()
       x04g-cli analyze --profile x04g|lx04|gsi|custom --source <super> [options]
       x04g-cli build   --profile x04g|gsi|custom --source <super> --out <dir> [options]
       x04g-cli unpack  --source <super> --out <dir>
+      x04g-cli patch-file --image <ext4 img> --path </etc/file> --with <new file> --output <new img>
       x04g-cli lpmake  --device-size <bytes> --output <new file> [--sparse] name=image ...
                        (same fixed parameters as the original scripts: 64 KiB metadata, 1 slot, group "main")
 
     options:
       --system <img>        replacement system image (required for gsi/custom)
       --replace <part>=<img> replace any partition
+      --patch <part>:<path>=<file>  replace one file inside a partition, in place (e.g. vendor:/etc/x.xml=x.xml)
       --remove <part>       leave a partition out (gsi removes product by default)
       --keep-product        gsi: keep product
       --shrink              shrink ext4 images with e2fsck/resize2fs (on copies)
@@ -87,6 +89,19 @@ try
         return 0;
     }
 
+    if (cmd == "patch-file")
+    {
+        var r = Ext4FilePatcher.PatchCopy(Opt("image") ?? throw new ToolkitException("--image is required."),
+            Opt("output") ?? throw new ToolkitException("--output is required."),
+            Opt("path") ?? throw new ToolkitException("--path is required."),
+            File.ReadAllBytes(Opt("with") ?? throw new ToolkitException("--with is required.")));
+        Console.WriteLine($"Patched {r.FilePath}: inode {r.Inode}, size {r.OldSize} -> {r.NewSize}, data blocks {string.Join(",", r.DataBlocks)}");
+        Console.WriteLine($"  old sha256 {r.OldSha256}\n  new sha256 {r.NewSha256}");
+        Console.WriteLine($"  changed filesystem blocks: {string.Join(", ", r.ChangedBlocks)}");
+        Console.WriteLine($"Verified: {r.ImagePath}");
+        return 0;
+    }
+
     if (cmd == "lpmake")
     {
         var size = ulong.Parse(Opt("device-size") ?? throw new ToolkitException("--device-size is required."));
@@ -143,6 +158,12 @@ try
         var eq = r.IndexOf('=');
         if (eq <= 0) throw new ToolkitException($"--replace expects part=path, got '{r}'.");
         req.Replacements[r[..eq]] = r[(eq + 1)..];
+    }
+    foreach (var pt in opts.GetValueOrDefault("patch") ?? new())
+    {
+        int c = pt.IndexOf(':'), eq = pt.IndexOf('=');
+        if (c <= 0 || eq <= c) throw new ToolkitException($"--patch expects part:/path=file, got '{pt}'.");
+        req.FilePatches.Add(new FilePatch(pt[..c], pt[(c + 1)..eq], pt[(eq + 1)..]));
     }
     if (profile.RemovesProductByDefault && !flags.Contains("keep-product")) req.RemovePartitions.Add("product");
     foreach (var r in opts.GetValueOrDefault("remove") ?? new()) req.RemovePartitions.Add(r);

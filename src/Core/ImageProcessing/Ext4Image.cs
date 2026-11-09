@@ -66,6 +66,8 @@ public sealed class Ext4Image
     public uint FeatureIncompat { get; }
     public uint FeatureRoCompat { get; }
     public string VolumeName { get; }
+    /// <summary>s_state: 1 = cleanly unmounted, 2 = errors detected.</summary>
+    public ushort State { get; }
     public string LastMounted { get; }
     public int GroupCount { get; }
 
@@ -98,6 +100,7 @@ public sealed class Ext4Image
         FeatureIncompat = BinaryPrimitives.ReadUInt32LittleEndian(b[0x60..]);
         FeatureRoCompat = BinaryPrimitives.ReadUInt32LittleEndian(b[0x64..]);
         VolumeName = ReadCString(b.Slice(0x78, 16));
+        State = BinaryPrimitives.ReadUInt16LittleEndian(b[0x3A..]);
         LastMounted = ReadCString(b.Slice(0x88, 64));
         bool is64 = (FeatureIncompat & Incompat64Bit) != 0;
         uint descSize = is64 ? Math.Max(32u, BinaryPrimitives.ReadUInt16LittleEndian(b[0xFE..])) : 32u;
@@ -308,6 +311,43 @@ public sealed class Ext4Image
             stack.Add(cur);
         }
         return cur;
+    }
+
+    /// <summary>Inode number of a path (symlinks followed), or null.</summary>
+    public uint? FindInode(string path) => Lookup(path);
+
+    /// <summary>Absolute byte offset of an inode record inside the image.</summary>
+    public long InodeOffset(uint ino)
+    {
+        if (ino == 0 || ino > InodesCount) throw new InvalidImageException($"Invalid inode number {ino}.");
+        uint g = (ino - 1) / InodesPerGroup;
+        if (g >= _inodeTables.Length) throw new InvalidImageException($"Inode {ino} is outside the group table.");
+        return _inodeTables[g] + (long)((ino - 1) % InodesPerGroup) * InodeSize;
+    }
+
+    public sealed record FileLayout(uint Inode, ushort Mode, ulong Size, uint Flags, bool UsesExtents, bool InlineData, IReadOnlyList<ulong> Blocks, bool HasUninitializedExtents);
+
+    /// <summary>Physical block of every logical block of a regular file, in logical order (holes are not allowed).</summary>
+    public FileLayout GetFileLayout(string path)
+    {
+        var ino = Lookup(path) ?? throw new ToolkitException($"'{path}' not found in the filesystem.");
+        var node = ReadInode(ino);
+        if (!node.IsFile) throw new ToolkitException($"'{path}' is not a regular file.");
+        bool inline = (node.Flags & 0x10000000) != 0;
+        var map = new List<(ulong Logical, ulong Physical, ulong Count, bool Uninit)>();
+        ulong nBlocks = (node.Size + BlockSize - 1) / BlockSize;
+        if (!inline)
+        {
+            if ((node.Flags & 0x80000) != 0) ExtentWalk(node.Block, map, 0);
+            else BlockMapWalk(node.Block, nBlocks, map);
+        }
+        var blocks = new List<ulong>();
+        foreach (var (logical, physical, count, _) in map.OrderBy(m => m.Logical))
+        {
+            if (logical != (ulong)blocks.Count) throw new ToolkitException($"'{path}' is sparse (has holes); in-place patching is not supported.");
+            for (ulong i = 0; i < count; i++) blocks.Add(physical + i);
+        }
+        return new FileLayout(ino, node.Mode, node.Size, node.Flags, (node.Flags & 0x80000) != 0, inline, blocks, map.Any(m => m.Uninit));
     }
 
     public bool Exists(string path)

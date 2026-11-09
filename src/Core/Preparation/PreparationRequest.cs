@@ -10,6 +10,12 @@ public enum OutputFormat
     Raw,
 }
 
+/// <summary>Replace one existing file inside a partition image (in place, same block count, inode and SELinux label kept).</summary>
+public sealed record FilePatch(string Partition, string PathInImage, string ReplacementFile)
+{
+    public override string ToString() => $"{Partition}:{PathInImage} ← {Path.GetFileName(ReplacementFile)}";
+}
+
 /// <summary>Everything the user selected in the wizard. Analysis and execution both read from this.</summary>
 public sealed class PreparationRequest
 {
@@ -23,6 +29,9 @@ public sealed class PreparationRequest
 
     /// <summary>Partitions of the source super that are left out of the new super (GSI: "product").</summary>
     public HashSet<string> RemovePartitions { get; init; } = new(StringComparer.Ordinal);
+
+    /// <summary>Files to replace inside partition images before building (e.g. vendor:/etc/media_codecs_mediatek_audio.xml).</summary>
+    public List<FilePatch> FilePatches { get; init; } = new();
 
     /// <summary>Write every source partition to its own .img file (lpunpack equivalent).</summary>
     public bool ExtractPartitions { get; set; }

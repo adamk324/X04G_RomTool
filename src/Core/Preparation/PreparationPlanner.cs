@@ -85,6 +85,11 @@ public static class PreparationPlanner
 
         if (req.BuildSuper && report.SourceIsSuper)
         {
+            foreach (var grp in req.FilePatches.GroupBy(f => f.Partition))
+                ops.Add(new PlannedOperation(OperationKind.WorkingCopy,
+                    $"Copy '{grp.Key}' and replace in place: {string.Join("; ", grp.Select(f => f.PathInImage))} (same inode, blocks and SELinux label; verified block-by-block)",
+                    grp.Select(f => f.ReplacementFile).Prepend(req.SourcePath).Distinct().ToList(),
+                    new[] { In(Path.Combine("work", grp.Key + ".orig.img")), In(Path.Combine("work", grp.Key + ".patched.img")) }, Array.Empty<string>()));
             var shrink = req.ShrinkExt4 && toolchainAvailable ? report.Planned.Where(p => p.Shrinkable).ToList() : new();
             foreach (var p in shrink)
             {
@@ -99,7 +104,7 @@ public static class PreparationPlanner
             ops.Add(new PlannedOperation(OperationKind.BuildSuper, desc, reads.Distinct().ToList(), new[] { In(OutputFileName(req)) }, Array.Empty<string>()));
             if (req.VerifyOutput)
                 ops.Add(new PlannedOperation(OperationKind.Verify, "Re-open the new super and verify metadata and SHA-256 of every partition", new[] { In(OutputFileName(req)) }, Array.Empty<string>(), Array.Empty<string>()));
-            if (req.CleanupIntermediates && shrink.Count > 0)
+            if (req.CleanupIntermediates && shrink.Count > 0 && req.FilePatches.Count == 0)
                 ops.Add(new PlannedOperation(OperationKind.Cleanup, "Delete the working copies after successful verification", Array.Empty<string>(), Array.Empty<string>(), new[] { In("work") }));
         }
 
