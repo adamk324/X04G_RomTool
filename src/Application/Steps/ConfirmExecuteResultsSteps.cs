@@ -42,9 +42,9 @@ internal sealed class ConfirmStep : WizardStep
             foreach (var p in plan.Problems) _stack.Add(Ui.Status(p, Verdict.Fail));
             _stack.Add(Ui.FindingsBox(new (string, IEnumerable<Finding>)[] { ("Failures", r.InputFindings.Concat(r.CapacityFindings).Where(f => f.Severity == Severity.Fail)) }, 140));
         }
-        else if (r.Overall == Verdict.Warning)
+        else if (r.Overall != Verdict.Pass)
         {
-            _stack.Add(Ui.FindingsBox(new (string, IEnumerable<Finding>)[] { ("Warnings", r.InputFindings.Concat(r.CapacityFindings).Concat(r.CompatibilityFindings).Where(f => f.Severity == Severity.Warning)) }, 160), 8);
+            _stack.Add(Ui.FindingsBox(new (string, IEnumerable<Finding>)[] { ("Warnings and compatibility failures", r.InputFindings.Concat(r.CapacityFindings).Concat(r.CompatibilityFindings).Where(f => f.Severity is Severity.Warning or Severity.Fail)) }, 160), 8);
             _ack = _stack.Add(new CheckBox { Text = "I have read the warnings. I understand that the result cannot be fully verified and that a successful build does not mean the image boots.", AutoSize = true, Font = Theme.Bold });
             _ack.CheckedChanged += (_, _) => Host.RefreshButtons();
         }

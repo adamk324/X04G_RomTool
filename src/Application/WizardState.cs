@@ -34,6 +34,16 @@ public sealed class WizardState
     public bool Cleanup { get; set; }
     public bool DryRun { get; set; }
 
+    /// <summary>Known fixes the user enabled (ids from Core.RomProfiles.KnownFixes).</summary>
+    public HashSet<string> EnabledFixes { get; } = new();
+    /// <summary>Set once recommended fixes have been pre-selected for the current inputs, so user choices are not overridden.</summary>
+    public bool FixDefaultsApplied { get; set; }
+
+    /// <summary>Advanced: one user-supplied in-place file replacement.</summary>
+    public string? CustomPatchPartition { get; set; }
+    public string? CustomPatchPath { get; set; }
+    public string? CustomPatchFile { get; set; }
+
     // Environment
     public IExt4Toolchain? Toolchain { get; set; }
     public List<string> ToolchainNotes { get; } = new();
@@ -54,6 +64,9 @@ public sealed class WizardState
         PatchBoot = Profile.OffersBootPatch && BootPath != null;
         ShrinkExt4 = false;
         DryRun = false;
+        EnabledFixes.Clear();
+        FixDefaultsApplied = false;
+        CustomPatchPartition = CustomPatchPath = CustomPatchFile = null;
     }
 
     /// <summary>Fresh log for a new execution (each run folder gets only its own entries).</summary>
@@ -93,6 +106,9 @@ public sealed class WizardState
         if (Profile.Id == RomProfileId.X04GGlobal)
             foreach (var (k, v) in ExtraReplacements) req.Replacements[k] = v;
         if (RemoveProduct) req.RemovePartitions.Add("product");
+        foreach (var f in EnabledFixes) req.EnabledFixes.Add(f);
+        if (CustomPatchPartition != null && CustomPatchPath != null && CustomPatchFile != null)
+            req.FilePatches.Add(new FilePatch(CustomPatchPartition, CustomPatchPath, CustomPatchFile));
         return req;
     }
 }

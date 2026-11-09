@@ -28,6 +28,9 @@ files untouched. The toolkit only reads them, but keep a second copy anyway.
    A typical result is capacity PASS and compatibility WARNING — GSIs can never be fully verified offline.
    If capacity is WARNING "could fit only if shrunk", enable shrinking (needs ext4 tools).
 4. Options: keep *Remove the product partition* (documented), *Sparse*, *Verify*, and *Create a boot image with SELinux permissive*.
+   If the GSI is **Android 16 or newer**, keep **[Recommended] Remove the MPEG Layer I/II (MP2) audio decoder declaration**
+   checked. Without it, X04G vendors crash `system_server` on Android 16 and the boot animation never ends.
+   *Show the exact change…* displays the diff; the original vendor is kept in the run folder as `work\vendor.orig.img`.
 5. Run a **dry run** first if you like; it reports the exact output size without writing anything.
 6. Flash manually following [original/FlashCustomImages.md](original/FlashCustomImages.md):
    `fastboot flash boot boot_selinux_permissive.img`, `fastboot flash super super_GSI_new.img`,

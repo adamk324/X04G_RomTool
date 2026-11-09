@@ -64,6 +64,15 @@ The UI never contains image logic, so everything that matters is covered by test
 * **ext4 reading.** Extents, classic block maps (incl. indirect blocks), inline data (≤ 60 bytes), fast and slow symlinks
   and htree directories (read linearly) are supported. `meta_bg` filesystems are detected (statistics only).
 
+* **Android 16 MP2 boot blocker (X04G).** Android 16's `libmedia_codeclist_capabilities` (`AudioCapabilities.cpp`, built
+  with `unsigned-integer-overflow` UBSan) has no limits for `audio/mpeg-L2`. With no `channel-count` limit in the vendor
+  XML, `parseFromInfo()` sets the channel range to `[0,0]`, the intersection is empty, and
+  `getMaxInputChannelCount()` evaluates `mInputChannelRanges.size() - 1` on 0 → `ubsan: sub-overflow` abort inside
+  `system_server` (StorageManagerService.handleSystemReady → codec list). Reproduced by compiling the unmodified Android 16
+  source with Android's sanitizer flags. Only MP1/MP2 reach that code on Android-10 vendors: the VNDK-29 OMX store drops
+  types without an OMX role (WMA, APE, ALAC, ADPCM). `Mp2CodecFix` generates the corrected file from the vendor; on the
+  real X04G vendor it produces exactly the file that was flashed and booted (SHA-256 `6098df03…58c4`, 5075 → 4759 bytes).
+
 ## Implemented
 
 * ROM selection screen with the four options and their documentation status.
@@ -73,7 +82,9 @@ The UI never contains image logic, so everything that matters is covered by test
 * Unpack super.bin / super.img (raw or sparse), build super (sparse or raw) with replaced/removed partitions,
   product removal for GSI, optional ext4 shrink on copies, documented boot cmdline patch, verification, dry run,
   cancellation (`*.incomplete` markers), unique run folders, logs, reports, SHA-256 checksums.
-* WinForms 9-step wizard, CLI, 32 automated tests.
+* Known fixes (`mp2-codec`) with detection, recommendation by system SDK, generated patches and diff preview.
+* In-place ext4 file replacement (`Ext4FilePatcher`), integrated in analysis, plan, executor, GUI and CLI.
+* WinForms 9-step wizard, CLI, 40 automated tests.
 
 ## Not implemented / known limitations
 
@@ -94,8 +105,13 @@ The UI never contains image logic, so everything that matters is covered by test
 ## Testing results (2026-11-08, Linux x64, .NET 8.0.133)
 
 ```
-32 passed, 0 failed, 0 skipped
+40 passed, 0 failed, 0 skipped      (2026-11-09; 32 on 2026-11-08)
 ```
+
+Added on 2026-11-09: in-place patch keeps inode/blocks/SELinux label and changes only the expected blocks (checked with
+e2fsck and debugfs); unsafe patches refused; GSI build with a vendor file patch on an X04G-like super (2 metadata slots,
+512-byte alignment); MP2 detection, Android-16-only recommendation, channel-limited and mixed-type codecs; analysis
+FAIL until the fix is enabled; end-to-end GSI build with the fix.
 
 Covered: sparse round trip, independent `img2simg`/`simg2img` cross-checks, corrupt/truncated/empty sparse images;
 lpmake layout rules, insufficient space, exact fit, group limits, metadata round trip and checksums, backup-copy

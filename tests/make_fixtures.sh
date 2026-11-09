@@ -51,3 +51,33 @@ mke2fs -q -F -t ext4 -b 4096 -O ^metadata_csum,^has_journal,^64bit -U 11111111-2
 debugfs -w -R "ea_set /etc/codecs.xml security.selinux u:object_r:vendor_configs_file:s0" $T/vendor_nocsum.img >/dev/null 2>&1
 gzip -9 -n -c $T/vendor_nocsum.img > "$OUT/vendor_nocsum.img.gz"
 rm -rf "$T"
+# MTK-like vendor (no metadata_csum, like X04G) whose codec list declares an MP2 decoder without a channel limit
+T=$(mktemp -d); R=$T/mv; mkdir -p $R/etc
+cat > $R/etc/media_codecs.xml <<'X'
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- synthetic test file -->
+<MediaCodecs>
+    <Include href="media_codecs_test_audio.xml" />
+</MediaCodecs>
+X
+{
+printf '<?xml version="1.0" encoding="utf-8" ?>\n<!-- synthetic MTK-style codec list for tests -->\n<Included>\n    <Decoders>\n'
+printf '        <MediaCodec name="OMX.TEST.AUDIO.DECODER.MP3" type="audio/mpeg">\n            <Limit name="concurrent-instances" max="16" />\n        </MediaCodec>\n\n'
+printf '        <MediaCodec name="OMX.TEST.AUDIO.DECODER.MP2">\n            <Type name="audio/mpeg-L2" />\n            <Quirk name="decoder-lies-about-number-of-channels" />\n            <Limit name="concurrent-instances" max="16" />\n        </MediaCodec>\n\n'
+for i in $(seq 1 30); do printf '        <MediaCodec name="OMX.TEST.AUDIO.DECODER.X%02d" type="audio/x-test-%02d">\n            <Limit name="concurrent-instances" max="16" />\n        </MediaCodec>\n' $i $i; done
+printf '    </Decoders>\n</Included>\n'
+} > $R/etc/media_codecs_test_audio.xml
+printf 'ro.vndk.version=29\nro.vendor.build.version.sdk=29\nro.vendor.build.version.release=10\nro.treble.enabled=true\nro.vendor.product.cpu.abilist=armeabi-v7a,armeabi\n' > $R/build.prop
+truncate -s 1024K $T/vendor_mtk_like.img
+mke2fs -q -F -t ext4 -b 4096 -O ^metadata_csum,^has_journal,^64bit -U 11111111-2222-3333-4444-555555555555 -E hash_seed=11111111-2222-3333-4444-555555555555 -d $R $T/vendor_mtk_like.img
+debugfs -w -R "ea_set /etc/media_codecs_test_audio.xml security.selinux u:object_r:vendor_configs_file:s0" $T/vendor_mtk_like.img >/dev/null 2>&1
+gzip -9 -n -c $T/vendor_mtk_like.img > "$OUT/vendor_mtk_like.img.gz"
+# Android 16-like 32-bit system-as-root image (SDK 36) that ships the VNDK v29 apex
+R=$T/g16; mkdir -p $R/system/bin $R/system/system_ext/apex
+printf 'ro.system.build.version.sdk=36\nro.system.build.version.release=16\nro.system.product.cpu.abilist=armeabi-v7a,armeabi\nro.build.display.id=TEST-GSI-16\n' > $R/system/build.prop
+echo gsi > $R/system/system_ext/apex/com.android.vndk.v29.apex
+echo init > $R/system/bin/init; ln -s /system/bin/init $R/init
+truncate -s 2048K $T/gsi_sar_arm32_sdk36.img
+mke2fs -q -F -t ext4 -b 4096 -U 11111111-2222-3333-4444-555555555555 -E hash_seed=11111111-2222-3333-4444-555555555555 -d $R $T/gsi_sar_arm32_sdk36.img
+gzip -9 -n -c $T/gsi_sar_arm32_sdk36.img > "$OUT/gsi_sar_arm32_sdk36.img.gz"
+rm -rf "$T"

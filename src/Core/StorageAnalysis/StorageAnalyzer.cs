@@ -157,35 +157,75 @@ public static class StorageAnalyzer
             }
             foreach (var r in req.RemovePartitions)
                 if (!names.Contains(r)) report.InputFindings.Add(new Finding(Severity.Warning, Inp, $"'{r}' was selected for removal but does not exist in the source."));
-            // In-place file patches (validated read-only against the content that will be built)
-            foreach (var fp in req.FilePatches)
+            // Stream of a partition's content as it will be built: the user's replacement image, or the source super.
+            Stream OpenPlannedContent(string part, List<IDisposable> owned)
+            {
+                if (req.Replacements.TryGetValue(part, out var repPath))
+                {
+                    var rf = ImageFile.Open(repPath);
+                    owned.Add(rf);
+                    return rf.Stream;
+                }
+                var lpPart = md.FindPartition(part)!;
+                var regions = md.ExtentsOf(lpPart).Select(e => ((long)(e.TargetData * LpFormat.SectorSize), (long)e.Bytes, e.TargetType == LpFormat.TargetZero));
+                return new ConcatRegionStream(file.Stream, regions);
+            }
+
+            // Known fixes (detected read-only from the vendor that will be built)
+            if (names.Contains(Mp2CodecFix.Partition) && !req.RemovePartitions.Contains(Mp2CodecFix.Partition) && req.Profile.Id != RomProfileId.LX04Chinese)
+            {
+                var owned = new List<IDisposable>();
+                try
+                {
+                    int? sdk = (replacementInfo.TryGetValue("system", out var rs) ? rs.Image?.Sdk : null)
+                               ?? (images.TryGetValue("system", out var ss) && !req.Replacements.ContainsKey("system") ? ss.Sdk : null);
+                    var fix = Mp2CodecFix.Detect(OpenPlannedContent(Mp2CodecFix.Partition, owned), sdk);
+                    if (fix != null)
+                    {
+                        report.KnownFixes.Add(fix);
+                        bool on = req.EnabledFixes.Contains(fix.Id);
+                        string items = string.Join("; ", fix.AffectedItems);
+                        if (fix.Blocker != null)
+                            report.CompatibilityFindings.Add(new Finding(fix.Recommended ? Severity.Fail : Severity.Warning, "Compatibility",
+                                $"Known issue: {items}. {fix.Blocker}"));
+                        else if (on)
+                            report.CompatibilityFindings.Add(new Finding(Severity.Pass, "Compatibility",
+                                $"Known fix enabled: removing {items} (prevents the Android 16 system_server codec-list crash)."));
+                        else if (fix.Recommended)
+                            report.CompatibilityFindings.Add(new Finding(Severity.Fail, "Compatibility",
+                                $"Known boot blocker: the vendor declares {items}. On Android 16 this aborts system_server (\"ubsan: sub-overflow\" while building the codec list) and boot never completes. Enable the MP2 fix in the options."));
+                        else
+                            report.CompatibilityFindings.Add(new Finding(Severity.Info, "Compatibility",
+                                $"The vendor declares {items}. {fix.RecommendationReason} The MP2 fix is available if needed."));
+                    }
+                    else if (req.EnabledFixes.Contains(Mp2CodecFix.Id))
+                        report.InputFindings.Add(new Finding(Severity.Warning, Inp, "The MP2 fix is enabled but the vendor declares no affected codec; nothing will be changed."));
+                }
+                catch (Exception ex)
+                {
+                    report.InputFindings.Add(new Finding(Severity.Warning, Inp, $"Could not check the vendor for known issues: {ex.Message}"));
+                }
+                finally { foreach (var o in owned) o.Dispose(); }
+            }
+
+            // In-place file patches (user files + enabled known fixes), validated read-only against the content that will be built
+            foreach (var fp in EffectivePatches(req, report))
             {
                 if (!names.Contains(fp.Partition) || req.RemovePartitions.Contains(fp.Partition))
                 {
                     report.InputFindings.Add(new Finding(Severity.Fail, Inp, $"File patch {fp}: partition '{fp.Partition}' is not part of the new super."));
                     continue;
                 }
-                if (!File.Exists(fp.ReplacementFile))
+                if (!fp.IsGenerated && !File.Exists(fp.ReplacementFile))
                 {
                     report.InputFindings.Add(new Finding(Severity.Fail, Inp, $"File patch {fp}: replacement file not found."));
                     continue;
                 }
+                var owned = new List<IDisposable>();
                 try
                 {
-                    long newLen = new FileInfo(fp.ReplacementFile).Length;
-                    string? why;
-                    if (req.Replacements.TryGetValue(fp.Partition, out var repPath))
-                    {
-                        using var rf = ImageFile.Open(repPath);
-                        why = Ext4FilePatcher.CanPatch(rf.Stream, fp.PathInImage, newLen);
-                    }
-                    else
-                    {
-                        var lpPart = md.FindPartition(fp.Partition)!;
-                        var regions = md.ExtentsOf(lpPart).Select(e => ((long)(e.TargetData * LpFormat.SectorSize), (long)e.Bytes, e.TargetType == LpFormat.TargetZero));
-                        using var ps = new ConcatRegionStream(file.Stream, regions);
-                        why = Ext4FilePatcher.CanPatch(ps, fp.PathInImage, newLen);
-                    }
+                    long newLen = fp.ContentLength;
+                    string? why = Ext4FilePatcher.CanPatch(OpenPlannedContent(fp.Partition, owned), fp.PathInImage, newLen);
                     report.InputFindings.Add(why == null
                         ? new Finding(Severity.Pass, Inp, $"File patch {fp}: can be applied in place ({newLen:N0} bytes; inode, owner, mode and SELinux label are kept).")
                         : new Finding(Severity.Fail, Inp, $"File patch {fp}: {why}."));
@@ -194,6 +234,7 @@ public static class StorageAnalyzer
                 {
                     report.InputFindings.Add(new Finding(Severity.Fail, Inp, $"File patch {fp}: {ex.Message}"));
                 }
+                finally { foreach (var o in owned) o.Dispose(); }
             }
             if (req.Profile.ReplacesSystem && !req.Replacements.ContainsKey("system"))
                 report.InputFindings.Add(new Finding(Severity.Fail, Inp, "No system image selected."));
@@ -266,6 +307,15 @@ public static class StorageAnalyzer
     }
 
     private sealed record ImageFileInfo(string Path, bool IsSparse, long FileLength, long RawLength);
+
+    /// <summary>User-supplied patches plus the generated patches of every enabled known fix.</summary>
+    public static List<FilePatch> EffectivePatches(PreparationRequest req, StorageReport report)
+    {
+        var list = new List<FilePatch>(req.FilePatches);
+        foreach (var fix in report.KnownFixes.Where(f => req.EnabledFixes.Contains(f.Id) && f.Blocker == null))
+            list.AddRange(fix.Patches);
+        return list;
+    }
 
     public static AndroidImageInspector.Role RoleOf(string partition)
     {

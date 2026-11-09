@@ -81,6 +81,13 @@ internal sealed class InputFilesStep : WizardStep
     public override Task<bool> OnNextAsync()
     {
         bool hadBoot = State.BootPath != null;
+        if (State.SourcePath != _source!.Path || State.SystemPath != _system?.Path ||
+            State.ExtraReplacements.GetValueOrDefault("vendor") != _extra.GetValueOrDefault("vendor")?.Path)
+        {
+            // Different vendor or system: re-evaluate which known fixes are recommended.
+            State.EnabledFixes.Clear();
+            State.FixDefaultsApplied = false;
+        }
         State.SourcePath = _source!.Path;
         State.SystemPath = _system?.Path;
         State.BootPath = _boot?.Path;
@@ -137,6 +144,19 @@ internal sealed class AnalyzeStep : WizardStep
         {
             var req = State.BuildRequest();
             State.Report = await Task.Run(() => StorageAnalyzer.Analyze(req, State.Toolchain, log));
+            if (!State.FixDefaultsApplied)
+            {
+                // Pre-select known fixes that the analysis says this system needs, then re-analyze so the report shows them.
+                var recommended = State.Report.KnownFixes.Where(f => f.Recommended && f.Blocker == null).Select(f => f.Id).ToList();
+                State.FixDefaultsApplied = true;
+                if (recommended.Count > 0)
+                {
+                    foreach (var id in recommended) State.EnabledFixes.Add(id);
+                    log.Info($"Known fix recommended and pre-selected: {string.Join(", ", recommended)} (can be turned off in the options).");
+                    var req2 = State.BuildRequest();
+                    State.Report = await Task.Run(() => StorageAnalyzer.Analyze(req2, State.Toolchain, log));
+                }
+            }
             _label.Text = $"Analysis finished in {sw.Elapsed.TotalSeconds:0.0} s.";
             _bar.Style = ProgressBarStyle.Continuous; _bar.Value = _bar.Maximum;
             _busy = false;

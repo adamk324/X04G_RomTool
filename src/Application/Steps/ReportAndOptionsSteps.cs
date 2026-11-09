@@ -134,6 +134,10 @@ internal sealed class OptionsStep : WizardStep
     private readonly Stack _stack = new();
     private CheckBox _extract = null!, _build = null!, _removeProduct = null!, _shrink = null!, _verify = null!, _patchBoot = null!, _cleanup = null!, _dry = null!;
     private RadioButton _sparse = null!, _raw = null!;
+    private readonly Dictionary<string, CheckBox> _fixBoxes = new();
+    private ComboBox? _patchPart;
+    private TextBox? _patchPath;
+    private FilePicker? _patchFile;
 
     public OptionsStep(WizardState s, MainForm h) : base(s, h) => Controls.Add(_stack);
     public override string Title => "Preparation options";
@@ -194,6 +198,52 @@ internal sealed class OptionsStep : WizardStep
         }
         else _patchBoot = new CheckBox { Checked = false };
 
+        // ---- Known fixes (detected from the vendor that will be built) ----
+        _fixBoxes.Clear();
+        var fixes = r?.KnownFixes ?? new List<KnownFixCandidate>();
+        if (!State.FixDefaultsApplied)
+        {
+            foreach (var f in fixes.Where(f => f.Recommended && f.Blocker == null)) State.EnabledFixes.Add(f.Id);
+            State.FixDefaultsApplied = true;
+        }
+        if (fixes.Count > 0 && super && !lx)
+        {
+            _stack.Add(Ui.Sub("Known fixes for your vendor"));
+            foreach (var f in fixes)
+            {
+                var help = f.Explanation + "\n" + f.RecommendationReason + "\nChanges: " + string.Join("; ", f.AffectedItems) +
+                           (f.Blocker != null ? "\nCannot be applied automatically: " + f.Blocker : "\nOnly the listed codec entry is removed; the file keeps its inode, permissions and SELinux label, and the original vendor is kept as work\\vendor.orig.img.");
+                var cb = Option((f.Recommended ? "[Recommended] " : "") + f.Title, help, State.EnabledFixes.Contains(f.Id), f.Blocker == null);
+                _fixBoxes[f.Id] = cb;
+                if (f.DiffText.Length > 0)
+                {
+                    var show = new Button { Text = "Show the exact change…", AutoSize = true, Margin = new Padding(20, 2, 0, 4) };
+                    var diff = f.DiffText;
+                    show.Click += (_, _) => ShowText(f.Title, diff);
+                    _stack.Add(show);
+                }
+            }
+        }
+
+        // ---- Advanced: replace one file inside a partition ----
+        if (super && !lx)
+        {
+            _stack.Add(Ui.Sub("Advanced: replace a file inside a partition"));
+            _stack.Add(Ui.Muted("Replaces one existing file in place (same size in blocks), keeping its inode, owner, permissions and SELinux label. " +
+                                "Refused automatically when it cannot be done safely. Leave empty to skip."));
+            var parts = r?.Planned.Select(x => x.Name).ToArray() ?? Array.Empty<string>();
+            _patchPart = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
+            _patchPart.Items.AddRange(parts.Cast<object>().ToArray());
+            int idx = Array.IndexOf(parts, State.CustomPatchPartition ?? "vendor");
+            if (idx >= 0) _patchPart.SelectedIndex = idx; else if (parts.Length > 0) _patchPart.SelectedIndex = 0;
+            _patchPath = new TextBox { Width = 380, Text = State.CustomPatchPath ?? "" };
+            _stack.Add(Ui.Row(new Label { Text = "Partition", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _patchPart,
+                              new Label { Text = "Path inside it (e.g. /etc/x.xml)", AutoSize = true, Margin = new Padding(12, 6, 4, 0) }, _patchPath));
+            _patchFile = _stack.Add(new FilePicker("Replacement file", "The new contents for that file.", false) { Filter = "All files (*.*)|*.*" });
+            _patchFile.Path = State.CustomPatchFile;
+        }
+        else { _patchPart = null; _patchPath = null; _patchFile = null; }
+
         _stack.Add(Ui.Sub("Mode"));
         _dry = Option("Dry run (validate and simulate only — write nothing)", "Reads every input completely, simulates the build in memory and reports the exact output size, but creates no files or folders.", State.DryRun);
     }
@@ -201,7 +251,24 @@ internal sealed class OptionsStep : WizardStep
     public override string? ValidateNext()
     {
         if (!_extract.Checked && !_build.Checked && !_patchBoot.Checked) return "Select at least one operation.";
+        bool anyPatchField = !string.IsNullOrWhiteSpace(_patchPath?.Text) || _patchFile?.Path != null;
+        if (anyPatchField)
+        {
+            if (string.IsNullOrWhiteSpace(_patchPath?.Text) || !_patchPath!.Text.Trim().StartsWith('/')) return "Enter the absolute path inside the partition, e.g. /etc/media_codecs.xml.";
+            if (_patchFile?.Path is not string pf || !File.Exists(pf)) return "Select the replacement file.";
+            if (_patchPart?.SelectedItem == null) return "Select the partition to patch.";
+            if (!_build.Checked) return "Replacing a file only takes effect when building a new super image.";
+        }
         return null;
+    }
+
+    private void ShowText(string title, string text)
+    {
+        using var f = new Form { Text = title, Width = 900, Height = 520, StartPosition = FormStartPosition.CenterParent, ShowIcon = false, MinimizeBox = false };
+        var box = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill, Font = Theme.Mono,
+                                Text = text.Replace("\r\n", "\n").Replace("\n", Environment.NewLine) };
+        f.Controls.Add(box);
+        f.ShowDialog(FindForm());
     }
 
     public override async Task<bool> OnNextAsync()
@@ -215,6 +282,12 @@ internal sealed class OptionsStep : WizardStep
         State.Cleanup = _cleanup.Checked;
         State.PatchBoot = _patchBoot.Checked;
         State.DryRun = _dry.Checked;
+        foreach (var (id, cb) in _fixBoxes)
+            if (cb.Checked) State.EnabledFixes.Add(id); else State.EnabledFixes.Remove(id);
+        bool custom = !string.IsNullOrWhiteSpace(_patchPath?.Text) && _patchFile?.Path != null;
+        State.CustomPatchPartition = custom ? _patchPart!.SelectedItem as string : null;
+        State.CustomPatchPath = custom ? _patchPath!.Text.Trim() : null;
+        State.CustomPatchFile = custom ? _patchFile!.Path : null;
 
         // Options change the layout and disk needs: re-analyze (read-only) before confirmation.
         Host.SetStatus("Updating the analysis for the selected options…");

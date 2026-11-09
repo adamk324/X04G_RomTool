@@ -130,8 +130,9 @@ public sealed class PreparationExecutor
             foreach (var d in op.Deletes) _log.Info($"[dry-run]   would delete {d}");
         }
         var req = plan.Request;
-        if (req.FilePatches.Count > 0)
-            _log.Info($"[dry-run] File patches validated (read-only): {string.Join("; ", req.FilePatches)}. Partition sizes do not change.");
+        var dryPatches = StorageAnalyzer.EffectivePatches(req, report);
+        if (dryPatches.Count > 0)
+            _log.Info($"[dry-run] File patches validated (read-only): {string.Join("; ", dryPatches)}. Partition sizes do not change.");
         if (req.BuildSuper && report.SourceIsSuper && report.Layout?.Success == true && !(req.ShrinkExt4 && _toolchain != null && report.Planned.Any(p => p.Shrinkable)))
         {
             _log.Info("[dry-run] Simulating the super build in memory (reads every input, writes nothing)...");
@@ -221,7 +222,7 @@ public sealed class PreparationExecutor
         foreach (var p in report.Planned)
         {
             var baseContent = DirectContent(super, p);
-            var patches = req.FilePatches.Where(f => f.Partition == p.Name).ToList();
+            var patches = StorageAnalyzer.EffectivePatches(req, report).Where(f => f.Partition == p.Name).ToList();
             if (patches.Count > 0)
                 baseContent = ApplyFilePatches(baseContent, p, patches, run, result, ct);
 
@@ -286,7 +287,7 @@ public sealed class PreparationExecutor
         outHash = Convert.ToHexString(HashFile(outPath, ct)).ToLowerInvariant();
         result.Outputs.Add(new OutputFile(outPath, new FileInfo(outPath).Length, $"New super image ({req.Format.ToString().ToLowerInvariant()})", outHash));
 
-        if (req.CleanupIntermediates && req.FilePatches.Count == 0 && Directory.Exists(Path.Combine(run, "work")) && (result.Verified ?? false))
+        if (req.CleanupIntermediates && StorageAnalyzer.EffectivePatches(req, report).Count == 0 && Directory.Exists(Path.Combine(run, "work")) && (result.Verified ?? false))
         {
             Directory.Delete(Path.Combine(run, "work"), true);
             result.Outputs.RemoveAll(o => o.Description.Contains("intermediate"));
@@ -316,7 +317,16 @@ public sealed class PreparationExecutor
         {
             var fp = patches[i];
             var next = SafeFile.UniquePath(workDir, patches.Count == 1 ? $"{p.Name}.patched.img" : $"{p.Name}.patched{i + 1}.img");
-            var bytes = File.ReadAllBytes(fp.ReplacementFile);
+            var bytes = fp.ReadContent();
+            if (fp.IsGenerated)
+            {
+                // Keep the generated file next to the images so the change can be inspected and reproduced.
+                var gen = SafeFile.UniquePath(Path.Combine(workDir, "generated"), Path.GetFileName(fp.PathInImage));
+                Directory.CreateDirectory(Path.GetDirectoryName(gen)!);
+                using (var w = SafeFile.CreateNew(gen)) w.Write(bytes);
+                result.Outputs.Add(new OutputFile(gen, bytes.Length, $"Generated {fp.PathInImage} (fix '{fp.Origin}')", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant()));
+                _log.Info($"Generated {fp.PathInImage} for fix '{fp.Origin}' → {gen}");
+            }
             var r = WithIncomplete(next, () => Ext4FilePatcher.PatchCopy(current, next, fp.PathInImage, bytes, _log, _progress, ct));
             current = next;
         }

@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.1.0 — 2026-11-09 — Known fixes and in-place file patching
+
+### Added
+* **Known fix "mp2-codec" (Android 16 boot fix for MediaTek vendors).** The analysis reads the vendor's codec list
+  (`/vendor/etc/media_codecs.xml` and its includes) and detects MPEG audio Layer I/II decoders (`audio/mpeg-L1`/`-L2`)
+  without a channel-count limit. Android 16's native `AudioCapabilities` aborts `system_server` on those
+  (`ubsan: sub-overflow` while building the codec list), so boot never completes. When the selected system is
+  Android 16 or newer (SDK ≥ 36), the report shows a **FAIL "Known boot blocker"** and the fix is pre-selected;
+  the toolkit generates the corrected XML from *your own* vendor file (only the affected `<MediaCodec>` element is
+  removed, every other byte kept) and applies it in place. Verified on a Mi Smart Clock X04G: Android 16 boots, audio works.
+  GUI: *Preparation options → Known fixes for your vendor* (with *Show the exact change…*). CLI: `--fix mp2-codec`,
+  `check-fixes --vendor <img> --sdk <n>`.
+* **In-place file replacement inside ext4 partition images** (`Ext4FilePatcher`): same inode, blocks, owner, mode,
+  timestamps and SELinux label; refuses metadata_csum, journal recovery, unclean filesystems, inline data,
+  uninitialized extents, holes and block-count changes; verified by re-reading the file and comparing both images
+  block by block. GUI: *Advanced: replace a file inside a partition*. CLI: `patch-file`, `build --patch part:/path=file`.
+* Run folders keep `work/<partition>.orig.img` (unmodified reference), `work/<partition>.patched.img` and
+  `work/generated/<file>` for every patch.
+* The confirmation page now also requires acknowledging compatibility FAILs that do not block building.
+
+
 ## 2.0.0 — 2026-11-08 — Windows toolkit
 
 Complete rewrite of x04g_tools as a Windows application. The original Linux scripts and guides are preserved in

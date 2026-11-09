@@ -77,6 +77,7 @@ public sealed class StorageReport
 
     public List<Finding> CapacityFindings { get; } = new();
     public List<Finding> CompatibilityFindings { get; } = new();
+    public List<KnownFixCandidate> KnownFixes { get; } = new();
     public List<Finding> InputFindings { get; } = new();
 
     public Verdict CapacityVerdict => Findings.Combine(CapacityFindings.Concat(InputFindings));
@@ -135,6 +136,15 @@ public sealed class StorageReport
             sb.AppendLine($"Windows drive: {h.Directory}");
             sb.AppendLine($"  Free: {(h.FreeBytes is long fb ? ByteSize.WithExact(fb) : "unknown")}, needed: {ByteSize.WithExact(h.RequiredBytes)}");
             foreach (var (w, b) in h.Breakdown) sb.AppendLine($"    {w}: {ByteSize.Format(b)}");
+            sb.AppendLine();
+        }
+        foreach (var fix in KnownFixes)
+        {
+            sb.AppendLine($"Known fix available: {fix.Title}");
+            sb.AppendLine($"  {fix.RecommendationReason}");
+            foreach (var a in fix.AffectedItems) sb.AppendLine($"  affects: {a}");
+            if (fix.Blocker != null) sb.AppendLine($"  cannot be applied automatically: {fix.Blocker}");
+            else foreach (var line in fix.DiffText.Split('\n')) if (line.Length > 0) sb.AppendLine("    " + line);
             sb.AppendLine();
         }
         sb.AppendLine($"ext4 tools: {ToolchainName ?? "not available"}");

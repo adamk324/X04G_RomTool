@@ -71,6 +71,11 @@ Everything else works without them.
 | GSI | from the image | **Documented, experimental per image** | Keeps vendor, drops product (documented), uses the GSI as system; optional SELinux-permissive boot cmdline |
 | Custom system.img | from the image | **Not documented** – experimental | Like GSI, but product is kept unless you remove it |
 
+**Known fixes.** For GSIs the toolkit checks your vendor for known boot blockers. Currently: MediaTek vendors that
+declare an MP2 (`audio/mpeg-L2`) OMX decoder make Android 16 crash `system_server` during boot. The toolkit detects
+this, pre-selects the fix for Android 16+ systems, and removes only that codec entry from your vendor while building
+(verified on an X04G running Android 16). You can review the exact change before anything is written.
+
 GSI compatibility is checked against **your** vendor and stock system: filesystem, system-as-root layout,
 CPU ABI, Android SDK vs vendor, VNDK snapshot, `ro.treble.enabled`. A GSI is never reported as fully
 compatible — booting cannot be verified offline.
@@ -81,9 +86,9 @@ compatible — booting cannot be verified offline.
 X04G_Windows_Toolkit/
   src/Application/      WinForms wizard (X04GToolkit.exe)
   src/Core/             all logic, no UI, no dependencies
-    ImageProcessing/    sparse images, LP (super) metadata, lpmake-compatible allocator & writer, ext4 reader, boot image, ext4 toolchain
+    ImageProcessing/    sparse images, LP (super) metadata, lpmake-compatible allocator & writer, ext4 reader, in-place ext4 file patcher, boot image, ext4 toolchain
     StorageAnalysis/    storage checker and report
-    RomProfiles/        ROM options, image inspector, GSI/system compatibility checks
+    RomProfiles/        ROM options, image inspector, GSI/system compatibility checks, known fixes
     Preparation/        request → plan → executor (dry run, verify, outputs)
   src/Cli/              x04g-cli
   tests/                zero-dependency test runner + synthetic ext4 fixtures

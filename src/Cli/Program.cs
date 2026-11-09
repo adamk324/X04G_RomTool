@@ -15,6 +15,7 @@ static int Usage()
       x04g-cli analyze --profile x04g|lx04|gsi|custom --source <super> [options]
       x04g-cli build   --profile x04g|gsi|custom --source <super> --out <dir> [options]
       x04g-cli unpack  --source <super> --out <dir>
+      x04g-cli check-fixes --vendor <vendor.img> [--sdk <system SDK>]   show known fixes for a vendor image
       x04g-cli patch-file --image <ext4 img> --path </etc/file> --with <new file> --output <new img>
       x04g-cli lpmake  --device-size <bytes> --output <new file> [--sparse] name=image ...
                        (same fixed parameters as the original scripts: 64 KiB metadata, 1 slot, group "main")
@@ -23,6 +24,7 @@ static int Usage()
       --system <img>        replacement system image (required for gsi/custom)
       --replace <part>=<img> replace any partition
       --patch <part>:<path>=<file>  replace one file inside a partition, in place (e.g. vendor:/etc/x.xml=x.xml)
+      --fix <id>            apply a known fix detected in your vendor (mp2-codec = Android 16 MP2 boot fix)
       --remove <part>       leave a partition out (gsi removes product by default)
       --keep-product        gsi: keep product
       --shrink              shrink ext4 images with e2fsck/resize2fs (on copies)
@@ -86,6 +88,22 @@ try
                 Console.WriteLine($"  {kv.Key}={kv.Value}");
             foreach (var n in info.Notes) Console.WriteLine($"  note: {n}");
         }
+        return 0;
+    }
+
+    if (cmd == "check-fixes")
+    {
+        using var vf = ImageFile.Open(Opt("vendor") ?? throw new ToolkitException("--vendor is required."));
+        int? sdk = Opt("sdk") is string sd ? int.Parse(sd) : null;
+        var fix = Mp2CodecFix.Detect(vf.Stream, sdk);
+        if (fix == null) { Console.WriteLine("No known issues found in this vendor."); return 0; }
+        Console.WriteLine($"[{fix.Id}] {fix.Title}");
+        Console.WriteLine($"  {fix.RecommendationReason}");
+        foreach (var a in fix.AffectedItems) Console.WriteLine($"  affects: {a}");
+        if (fix.Blocker != null) Console.WriteLine($"  cannot apply automatically: {fix.Blocker}");
+        foreach (var p in fix.Patches)
+            Console.WriteLine($"  patch {p.Partition}:{p.PathInImage}: {p.ContentLength:N0} bytes, sha256 {Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(p.Content!)).ToLowerInvariant()}");
+        Console.WriteLine(fix.DiffText);
         return 0;
     }
 
@@ -165,6 +183,7 @@ try
         if (c <= 0 || eq <= c) throw new ToolkitException($"--patch expects part:/path=file, got '{pt}'.");
         req.FilePatches.Add(new FilePatch(pt[..c], pt[(c + 1)..eq], pt[(eq + 1)..]));
     }
+    foreach (var fx in opts.GetValueOrDefault("fix") ?? new()) req.EnabledFixes.Add(fx);
     if (profile.RemovesProductByDefault && !flags.Contains("keep-product")) req.RemovePartitions.Add("product");
     foreach (var r in opts.GetValueOrDefault("remove") ?? new()) req.RemovePartitions.Add(r);
 
